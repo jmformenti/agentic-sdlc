@@ -209,11 +209,16 @@ jobs:
           GH_TOKEN: ${{ steps.claude.outputs.github_token || github.token }}
           STRUCTURED: ${{ steps.claude.outputs.structured_output }}
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          CLAUDE_EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           LABEL_PASS: ${{ inputs.label-pass }}
           LABEL_WARNING: ${{ inputs.label-warning }}
           LABEL_FAIL: ${{ inputs.label-fail }}
           REVIEWER: ${{ inputs.human-reviewer }}
         run: |
+          if [ -z "$CLAUDE_EXECUTION_FILE" ]; then
+            echo "::error::The Claude action did not run (see its step log). No verdict."
+            exit 1
+          fi
           verdict=$(jq -r '.verdict // empty' <<< "$STRUCTURED" 2>/dev/null || true)
           if [ -z "$verdict" ]; then
             verdict=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \

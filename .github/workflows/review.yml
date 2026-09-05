@@ -198,11 +198,19 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.claude.outputs.github_token || github.token }}
           STRUCTURED: ${{ steps.claude.outputs.structured_output }}
+          CLAUDE_EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           LABEL_PASS: ${{ inputs.label-pass }}
           LABEL_WARNING: ${{ inputs.label-warning }}
           LABEL_FAIL: ${{ inputs.label-fail }}
           LABEL_NHR: ${{ inputs.label-needs-human-review }}
         run: |
+          # No execution file = the action skipped itself before running Claude
+          # (e.g. its workflow-file validation on the PR that first adds the
+          # workflow). Nothing to label; just fail visibly.
+          if [ -z "$CLAUDE_EXECUTION_FILE" ]; then
+            echo "::error::The Claude action did not run (see its step log: workflow validation, missing token...). No verdict."
+            exit 1
+          fi
           verdict=$(jq -r '.verdict // empty' <<< "$STRUCTURED" 2>/dev/null || true)
           if [ -z "$verdict" ]; then
             echo "No structured output; falling back to the marker in the report comment"

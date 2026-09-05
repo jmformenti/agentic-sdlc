@@ -63,6 +63,13 @@ Project-specific readiness/seeding logic belongs to your hook; make it idempoten
 tolerant to data the app seeds on its own (the original project started seeding an admin
 on empty DB, and the hook had to fall back to those credentials).
 
+## First PR that adds the caller workflow
+
+The Claude action skips itself with "Workflow validation failed. The workflow file must
+exist and have identical content to the version on the repository's default branch". This
+is the action's own protection on PR-triggered runs and is expected: the review job fails
+without labelling; everything works once the PR is merged.
+
 ## General
 
 **"context runner is not allowed here".**

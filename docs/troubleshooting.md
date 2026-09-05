@@ -68,12 +68,16 @@ Project-specific readiness/seeding logic belongs to your hook; make it idempoten
 tolerant to data the app seeds on its own (the original project started seeding an admin
 on empty DB, and the hook had to fall back to those credentials).
 
-## First PR that adds the caller workflow
+## Any PR that changes the caller workflow file
 
 The Claude action skips itself with "Workflow validation failed. The workflow file must
 exist and have identical content to the version on the repository's default branch". This
-is the action's own protection on PR-triggered runs and is expected: the review job fails
-without labelling; everything works once the PR is merged.
+is the action's own protection on `pull_request`-triggered runs: it refuses to run from a
+workflow file that differs from the one on the default branch. It happens on the PR that
+first adds `claude-sdlc.yml` **and on every later PR that edits it** (bumping `@v1`,
+changing an input...). Expected behaviour: the review job fails with an explicit error, no
+label and no comment; merge such PRs by hand after the normal CI is green. Everything works
+again from the next PR.
 
 ## General
 

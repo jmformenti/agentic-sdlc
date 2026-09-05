@@ -1,4 +1,4 @@
-# claude-sdlc
+# agentic-sdlc
 
 Reusable GitHub Actions workflows that turn a GitHub issue into a merged-ready pull request
 with [Claude Code](https://code.claude.com), keeping a human in the loop at the two points
@@ -29,14 +29,14 @@ secret, and the `gh` CLI locally.
 
 ```bash
 cd your-repo
-bash <(curl -sSL https://raw.githubusercontent.com/jmformenti/claude-sdlc/main/scripts/bootstrap.sh) \
+bash <(curl -sSL https://raw.githubusercontent.com/jmformenti/agentic-sdlc/main/scripts/bootstrap.sh) \
   --reviewer your-github-login --language en          # add --with-e2e if the app can run on a runner
 ```
 
 Then:
 
-1. Fill in `test-command` (and `ci-check-names`) in `.github/workflows/claude-sdlc.yml`.
-2. Optionally write your project checklist in `.github/claude-sdlc/review.md` / `implement.md`.
+1. Fill in `test-command` (and `ci-check-names`) in `.github/workflows/agentic-sdlc.yml`.
+2. Optionally write your project checklist in `.github/agentic-sdlc/review.md` / `implement.md`.
 3. Commit and push.
 4. Open an issue, run `/plan-issue <n>` from Claude Code, approve the plan → the flow starts.
 
@@ -44,8 +44,8 @@ Then:
 
 | Step | Trigger | Who | Result |
 |---|---|---|---|
-| Plan | you, `/plan-issue N` locally | Claude Code + you | comment `<!-- claude-sdlc:plan -->` + label `ready-to-implement` |
-| Implement | label `ready-to-implement` | `implement.yml` | branch `claude/issue-N`, tests green, PR with `Closes #N` — or draft PR + `to-refine` when it has a question |
+| Plan | you, `/plan-issue N` locally | Claude Code + you | comment `<!-- agentic-sdlc:plan -->` + label `ready-to-implement` |
+| Implement | label `ready-to-implement` | `implement.yml` | branch `agent/issue-N`, tests green, PR with `Closes #N` — or draft PR + `to-refine` when it has a question |
 | Review | PR opened / pushed / ready | `review.yml` | inline comments, one report comment, label `pass` / `warning` / `fail` |
 | Fix | label `warning` / `fail` | `fix-review.yml` | fixes pushed to the PR branch → review again (max `max-review-cycles`, then `needs-human-review`) |
 | E2E | label `pass` | `e2e.yml` (optional) | app started by your `e2e-up.sh`, tested live with Playwright; `fail` sends it back, success mentions the reviewer |
@@ -84,6 +84,13 @@ docs/                architecture, customization, e2e, security, troubleshooting
 
 Versioning: consumers reference `@v1` (moving major tag) or an exact `@v1.x.y`. Changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
+
+## Trademarks
+
+agentic-sdlc is an independent open-source project. It runs [Claude Code](https://code.claude.com)
+through Anthropic's `claude-code-action`, but it is not built, endorsed or sponsored by
+Anthropic. "Claude" and "Claude Code" are trademarks of Anthropic, PBC, used here only to
+describe compatibility.
 
 ## License
 

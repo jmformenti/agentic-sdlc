@@ -23,7 +23,7 @@ Pull requests from forks never receive secrets, so they cannot run the Claude ac
 
 | Agent | Input it acts on | Trust filter |
 |---|---|---|
-| implement | the plan | latest issue comment with `<!-- claude-sdlc:plan -->` whose author is `OWNER` / `MEMBER` / `COLLABORATOR` (`scripts/find-plan.sh`). A plan comment by anyone else is ignored and the run is blocked. |
+| implement | the plan | latest issue comment with `<!-- agentic-sdlc:plan -->` whose author is `OWNER` / `MEMBER` / `COLLABORATOR` (`scripts/find-plan.sh`). A plan comment by anyone else is ignored and the run is blocked. |
 | fix-review | the review report + inline comments | pre-fetched by the workflow from trusted authors only (collaborators, `claude[bot]`, `github-actions[bot]`); the prompt tells the agent to ignore any other source |
 | review, e2e | the PR diff, the issue and plan | read-only on code (`contents: read`); may edit PR labels/comments; plan filtered as above |
 | mention | the comment | gated by the action's write-permission check |
@@ -37,6 +37,11 @@ it before anything with write access runs.
 
 - `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`: repository secrets, passed with
   `secrets: inherit`. They never leave the consumer repository; this template holds none.
+- Each consumer must use **its own** credentials, billed to their owner. An OAuth token is
+  tied to one person's Claude subscription and is meant for that person's ordinary use of
+  Claude Code (its official action accepts it for that person's repositories); never share
+  one across people or organisations, and use an API key for anything that is not your own
+  usage. See Anthropic's [legal and compliance](https://code.claude.com/docs/en/legal-and-compliance) page.
 - Checkout uses `persist-credentials: false`; pushes go through `gh auth setup-git` with the
   job's `GITHUB_TOKEN`, and the action's own App token for its GitHub operations.
 - `show-full-output: true` prints the whole transcript, including tool outputs. Anything a

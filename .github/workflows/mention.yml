@@ -1,9 +1,9 @@
-# claude-sdlc — mention
+# agentic-sdlc — mention
 #
 # Ad-hoc interaction: answers "@claude" mentions in issues, PR comments and
 # reviews. Thin wrapper over anthropics/claude-code-action; the caller decides
 # the trigger condition.
-name: claude-sdlc / mention
+name: agentic-sdlc / mention
 
 on:
   workflow_call:

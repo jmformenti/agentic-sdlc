@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# claude-sdlc e2e hook: start the application on the GitHub runner, wait until
+# agentic-sdlc e2e hook: start the application on the GitHub runner, wait until
 # it answers, seed the test data, and export what the tester needs.
 #
-# Contract (see https://github.com/jmformenti/claude-sdlc/blob/main/docs/e2e.md):
+# Contract (see https://github.com/jmformenti/agentic-sdlc/blob/main/docs/e2e.md):
 #   - Runs from the repository root with the PR branch checked out.
 #   - Must exit non-zero if the app is not usable (the job then fails, no verdict).
-#   - Must append KEY=VALUE lines to the file named by $CLAUDE_SDLC_E2E_ENV: URLs
+#   - Must append KEY=VALUE lines to the file named by $AGENTIC_SDLC_E2E_ENV: URLs
 #     and TEST credentials only (they end up in the prompt and in the job log).
 set -euo pipefail
 
@@ -34,4 +34,4 @@ fi
   echo "APP_URL=http://localhost:3000"
   # echo "TEST_USER_EMAIL=tester@example.local"
   # echo "TEST_USER_PASSWORD=test1234"
-} >> "$CLAUDE_SDLC_E2E_ENV"
+} >> "$AGENTIC_SDLC_E2E_ENV"

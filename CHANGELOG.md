@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — v1.0.0
+## v1.0.0 — 2026-09-05
 
 First release, extracted from the `habitus-trainer` autonomous flow. Compared to the
 original copied workflows:

@@ -54,11 +54,12 @@ Rules that make it work:
   calls (remove all, then add one). GitHub only emits a new `labeled` event — the trigger of
   `fix-review` and `e2e` — when the label really changes; a combined
   `--add-label X --remove-label X` does not re-fire when the verdict repeats.
-- Labels are applied with the **Claude App token** returned by the action
-  (`steps.claude.outputs.github_token`), never with `GITHUB_TOKEN`: events created with
-  `GITHUB_TOKEN` never trigger other workflows.
-- The verdict comes from Claude's **structured output** (`--json-schema`), with the marker in
-  the report comment as a fallback. No second model run is needed to label.
+- Verdict labels are applied **by Claude inside the action run**, because that is the only
+  moment the Claude App token is alive (the action revokes it as its last step) and events
+  created with `GITHUB_TOKEN` never trigger other workflows. A deterministic step then
+  compares the label with Claude's **structured output** (`--json-schema`) and repairs the
+  label with `GITHUB_TOKEN` if they disagree — flagging that the next stage must be started
+  by hand in that case. No second model run is needed.
 - The review cycle counter is the number of trusted comments carrying
   `<!-- claude-sdlc:review`. `fix-review` refuses to run once it reaches `max-review-cycles`
   and labels `needs-human-review` instead.

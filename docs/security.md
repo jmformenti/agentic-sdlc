@@ -25,7 +25,7 @@ Pull requests from forks never receive secrets, so they cannot run the Claude ac
 |---|---|---|
 | implement | the plan | latest issue comment with `<!-- claude-sdlc:plan -->` whose author is `OWNER` / `MEMBER` / `COLLABORATOR` (`scripts/find-plan.sh`). A plan comment by anyone else is ignored and the run is blocked. |
 | fix-review | the review report + inline comments | pre-fetched by the workflow from trusted authors only (collaborators, `claude[bot]`, `github-actions[bot]`); the prompt tells the agent to ignore any other source |
-| review, e2e | the PR diff, the issue and plan | read-only agents; plan filtered as above |
+| review, e2e | the PR diff, the issue and plan | read-only on code (`contents: read`); may edit PR labels/comments; plan filtered as above |
 | mention | the comment | gated by the action's write-permission check |
 
 Untrusted text still reaches the agents: the **PR diff** itself (review, e2e) and the **issue

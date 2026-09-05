@@ -201,12 +201,13 @@ jobs:
             ${{ inputs.claude-args-extra }}
           prompt: ${{ steps.prompt.outputs.text }}
 
-      # On failure the PR goes back to `fail` (app token, so fix-review triggers);
-      # on success the human reviewer is asked to merge
+      # On failure Claude itself relabels the PR `fail` inside the action (app
+      # token → fix-review triggers; the token is revoked when the action ends).
+      # This step verifies/repairs the label and, on success, asks the human
+      # reviewer to merge.
       - name: Apply the e2e verdict
         if: always() && steps.claude.conclusion != 'skipped'
         env:
-          GH_TOKEN: ${{ steps.claude.outputs.github_token || github.token }}
           STRUCTURED: ${{ steps.claude.outputs.structured_output }}
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
           CLAUDE_EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
@@ -230,7 +231,14 @@ jobs:
             exit 1
           fi
           if [ "$verdict" = "fail" ]; then
-            "$TPL_DIR/scripts/set-verdict-label.sh" "$PR_NUMBER" fail "$LABEL_PASS" "$LABEL_WARNING" "$LABEL_FAIL"
+            current=$(gh pr view "$PR_NUMBER" --json labels --jq '[.labels[].name] | join(",")')
+            if tr ',' '\n' <<< "$current" | grep -qx "$LABEL_FAIL"; then
+              echo "e2e failed and the PR is labelled '$LABEL_FAIL'."
+            else
+              echo "::warning::e2e failed but the PR is not labelled '$LABEL_FAIL' (labels: '$current'); repairing with GITHUB_TOKEN — fix-review will NOT be triggered automatically"
+              "$TPL_DIR/scripts/set-verdict-label.sh" "$PR_NUMBER" fail "$LABEL_PASS" "$LABEL_WARNING" "$LABEL_FAIL"
+              gh pr comment "$PR_NUMBER" --body "⚠️ claude-sdlc: the e2e tester reported a failure but did not relabel the PR; the label was repaired by the workflow, which cannot trigger the next stage. Remove and re-add the \`$LABEL_FAIL\` label by hand to continue."
+            fi
           else
             mention=""
             [ -n "$REVIEWER" ] && mention=" @$REVIEWER"

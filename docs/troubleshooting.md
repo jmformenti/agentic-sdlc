@@ -31,6 +31,11 @@ App token, which does. If you changed the checkout / credential setup, restore
 `review.yml` uses `cancel-in-progress: true` per PR. If you copied the job elsewhere, keep
 the concurrency group.
 
+**`HTTP 401: Bad credentials` when using `steps.claude.outputs.github_token`.**
+The action revokes its App token as its last internal step, so the output is dead once the
+step is over. Anything that must trigger another workflow (labelling) has to happen inside
+the Claude run; steps after it only get `GITHUB_TOKEN`.
+
 **`fix-review` did not start after a `warning` although the label is there.**
 The verdict was the same as the previous cycle and the label was added/removed in a single
 `gh pr edit` call, so GitHub emitted no new `labeled` event. `scripts/set-verdict-label.sh`

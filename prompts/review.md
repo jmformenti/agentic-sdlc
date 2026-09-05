@@ -31,13 +31,22 @@ Review the whole diff looking at:
    `warning` or `fail`, followed by a heading and the report: overall verdict, conformance with
    the issue plan (if any) and the list of problems found (or a statement that everything is
    correct).
-3. Finish by returning the structured result `{"verdict": "...", "summary": "..."}` with the
-   same verdict as the marker.
+3. Label the PR with the verdict. The labels `pass`, `warning` and `fail` are mutually
+   exclusive; always do it in **two separate `gh pr edit` calls**, in this order, even if
+   you believe the verdict has not changed since the previous cycle:
+   1. `gh pr edit {{pr}} --remove-label pass --remove-label warning --remove-label fail`
+      (safe and idempotent even when none of them is present);
+   2. `gh pr edit {{pr}} --add-label VERDICT` (add `--remove-label needs-human-review` when
+      VERDICT is `pass`).
+   They must be independent calls: GitHub only emits the `labeled` event that starts the
+   next stage when the label is really removed and added again.
+4. Finish by returning the structured result `{"verdict": "...", "summary": "..."}` with the
+   same verdict as the marker and the label.
 
 Verdict scale:
 - `pass`: mergeable as is (or only trivial nits that do not need another cycle).
 - `warning`: must be fixed before merge but nothing is fundamentally wrong.
 - `fail`: bugs, missing plan items, security issues or broken conventions.
 
-Do not change any code and do not add or remove labels: a deterministic step after you labels
-the PR from your verdict.
+Do not change any code, do not mention anyone, and do not touch any label other than the
+three verdict ones (plus `needs-human-review` on `pass`).

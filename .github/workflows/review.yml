@@ -1,0 +1,218 @@
+# claude-sdlc — review
+#
+# Reviews a pull request, posts inline comments plus one report comment
+# (marker "<!-- claude-sdlc:review -->") and labels the PR with a verdict
+# (pass / warning / fail). The verdict is extracted deterministically from
+# Claude's structured output — no second model run to label.
+name: claude-sdlc / review
+
+on:
+  workflow_call:
+    inputs:
+      extra-instructions-file:
+        description: Path (in the consumer repo) of a Markdown file appended to the base prompt (project review checklist)
+        type: string
+        default: .github/claude-sdlc/review.md
+      ci-check-names:
+        description: Human description of the CI checks that already run tests/build on the PR (so the reviewer does not try to)
+        type: string
+        default: ''
+      branch-prefix:
+        description: Branch prefix used by implement.yml, to find the linked issue
+        type: string
+        default: claude/issue-
+      language:
+        type: string
+        default: en
+      model:
+        type: string
+        default: ''
+      max-turns:
+        type: number
+        default: 100
+      allowed-tools:
+        type: string
+        default: Bash(gh pr:*),Bash(gh issue view:*),Bash(gh api:*),Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment
+      allowed-bots:
+        description: Bots whose PRs may trigger the review (the implementer opens PRs as "claude")
+        type: string
+        default: claude
+      claude-args-extra:
+        type: string
+        default: ''
+      show-full-output:
+        type: boolean
+        default: true
+      label-pass:
+        type: string
+        default: pass
+      label-warning:
+        type: string
+        default: warning
+      label-fail:
+        type: string
+        default: fail
+      label-needs-human-review:
+        type: string
+        default: needs-human-review
+      legacy-plan-heading:
+        type: string
+        default: ''
+      timeout-minutes:
+        type: number
+        default: 30
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+    outputs:
+      verdict:
+        description: pass, warning or fail
+        value: ${{ jobs.review.outputs.verdict }}
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # A review of a superseded diff must never label after a newer one
+    concurrency:
+      group: claude-sdlc-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Fetch claude-sdlc template
+        run: |
+          TPL_DIR="$RUNNER_TEMP/claude-sdlc"
+          mkdir -p "$TPL_DIR"
+          gh api "repos/$TEMPLATE_REPO/tarball/$TEMPLATE_SHA" > "$RUNNER_TEMP/template.tar.gz"
+          tar -xzf "$RUNNER_TEMP/template.tar.gz" -C "$TPL_DIR" --strip-components=1
+          rm -f "$RUNNER_TEMP/template.tar.gz"
+          echo "TPL_DIR=$TPL_DIR" >> "$GITHUB_ENV"
+          echo "claude-sdlc template $TEMPLATE_REPO@$TEMPLATE_SHA extracted to $TPL_DIR"
+        env:
+          TEMPLATE_REPO: ${{ job.workflow_repository }}
+          TEMPLATE_SHA: ${{ job.workflow_sha }}
+
+      - name: Gather context (linked issue, approved plan, cycle number)
+        id: context
+        env:
+          BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+          LEGACY_HEADING: ${{ inputs.legacy-plan-heading }}
+        run: |
+          issue=$("$TPL_DIR/scripts/find-linked-issue.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$BRANCH_PREFIX")
+          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+          if [ -n "$issue" ] && "$TPL_DIR/scripts/find-plan.sh" "$GITHUB_REPOSITORY" "$issue" "$LEGACY_HEADING" > "$RUNNER_TEMP/plan.md"; then
+            echo "has_plan=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_plan=false" >> "$GITHUB_OUTPUT"
+            : > "$RUNNER_TEMP/plan.md"
+          fi
+          cycles=$("$TPL_DIR/scripts/count-review-cycles.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER")
+          echo "cycle=$((cycles + 1))" >> "$GITHUB_OUTPUT"
+
+      - name: Render the prompt
+        id: prompt
+        env:
+          TPL_pr: ${{ github.event.pull_request.number }}
+          TPL_repository: ${{ github.repository }}
+          TPL_issue: ${{ steps.context.outputs.issue }}
+          TPL_cycle: ${{ steps.context.outputs.cycle }}
+          TPL_language: ${{ inputs.language }}
+          HAS_PLAN: ${{ steps.context.outputs.has_plan }}
+          CI_CHECKS: ${{ inputs.ci-check-names }}
+          EXTRA_FILE: ${{ inputs.extra-instructions-file }}
+        run: |
+          if [ "$HAS_PLAN" = "true" ]; then
+            TPL_plan_section="$(printf 'The PR implements issue #%s, whose approved plan is reproduced below. Validate that the implementation follows it: promised files/changes, agreed decisions and the planned verification. Report every deviation (something missing, something done differently, out-of-scope additions) and say whether it is justified.\n\n<plan>\n%s\n</plan>' "$TPL_issue" "$(cat "$RUNNER_TEMP/plan.md")")"
+          elif [ -n "$TPL_issue" ]; then
+            TPL_plan_section="The PR references issue #$TPL_issue but that issue has no approved plan; review the PR on its own merits against the issue description (\`gh issue view $TPL_issue\`)."
+          else
+            TPL_plan_section="The PR is not linked to any issue; review it on its own merits."
+          fi
+          export TPL_plan_section
+          if [ -n "$CI_CHECKS" ]; then
+            TPL_ci_section="You cannot run tests or builds. The following CI checks already do it on every PR and their result is visible in the PR checks: $CI_CHECKS. Base your assessment of tests on reading the diff only."
+          else
+            TPL_ci_section="You cannot run tests or builds; base your assessment of tests on reading the diff only."
+          fi
+          export TPL_ci_section
+          {
+            echo "text<<CLAUDE_SDLC_PROMPT_EOF"
+            "$TPL_DIR/scripts/render-prompt.sh" "$TPL_DIR/prompts/review.md" "$EXTRA_FILE"
+            echo "CLAUDE_SDLC_PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Direct prompt instead of the code-review plugin: the plugin spawns
+      # parallel subagents and in non-interactive CI mode the main turn ends
+      # before they report back
+      - name: Run Claude Code review
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_bots: ${{ inputs.allowed-bots }}
+          show_full_output: ${{ inputs.show-full-output }}
+          claude_args: |
+            --max-turns ${{ inputs.max-turns }}
+            --allowedTools "${{ inputs.allowed-tools }}"
+            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","warning","fail"]},"summary":{"type":"string"}},"required":["verdict","summary"]}'
+            ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
+            ${{ inputs.claude-args-extra }}
+          prompt: ${{ steps.prompt.outputs.text }}
+
+      - name: Ensure the verdict labels exist
+        run: |
+          gh label create "$LABEL_PASS"    --color 0E8A16 --force
+          gh label create "$LABEL_WARNING" --color FBCA04 --force
+          gh label create "$LABEL_FAIL"    --color B60205 --force
+          gh label create "$LABEL_NHR"     --color 5319E7 --force
+        env:
+          LABEL_PASS: ${{ inputs.label-pass }}
+          LABEL_WARNING: ${{ inputs.label-warning }}
+          LABEL_FAIL: ${{ inputs.label-fail }}
+          LABEL_NHR: ${{ inputs.label-needs-human-review }}
+
+      # Labels are applied with the action's app token, not GITHUB_TOKEN:
+      # events created with GITHUB_TOKEN never trigger other workflows, and the
+      # `labeled` event is what starts fix-review.yml / e2e.yml
+      - name: Extract the verdict and label the PR
+        id: verdict
+        if: always() && steps.claude.conclusion != 'skipped'
+        env:
+          GH_TOKEN: ${{ steps.claude.outputs.github_token || github.token }}
+          STRUCTURED: ${{ steps.claude.outputs.structured_output }}
+          LABEL_PASS: ${{ inputs.label-pass }}
+          LABEL_WARNING: ${{ inputs.label-warning }}
+          LABEL_FAIL: ${{ inputs.label-fail }}
+          LABEL_NHR: ${{ inputs.label-needs-human-review }}
+        run: |
+          verdict=$(jq -r '.verdict // empty' <<< "$STRUCTURED" 2>/dev/null || true)
+          if [ -z "$verdict" ]; then
+            echo "No structured output; falling back to the marker in the report comment"
+            verdict=$("$TPL_DIR/scripts/find-review-report.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" \
+              | grep -oE 'claude-sdlc:review[^>]*verdict=(pass|warning|fail)' | head -1 | sed -E 's/.*verdict=//' || true)
+          fi
+          if [ -z "$verdict" ]; then
+            gh pr edit "$PR_NUMBER" --add-label "$LABEL_NHR"
+            gh pr comment "$PR_NUMBER" --body "⚠️ claude-sdlc: the review run produced no verdict. Manual review needed. See ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            exit 1
+          fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          "$TPL_DIR/scripts/set-verdict-label.sh" "$PR_NUMBER" "$verdict" "$LABEL_PASS" "$LABEL_WARNING" "$LABEL_FAIL" "$LABEL_NHR"

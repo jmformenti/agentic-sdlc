@@ -1,0 +1,207 @@
+# claude-sdlc — implement
+#
+# Turns an issue with an approved plan into a pull request. Called by the
+# consumer repository when the "ready-to-implement" label is added (or via
+# workflow_dispatch). See docs/architecture.md for the full state machine.
+name: claude-sdlc / implement
+
+on:
+  workflow_call:
+    inputs:
+      issue-number:
+        description: Issue to implement (must have an approved plan comment)
+        type: number
+        required: true
+      branch-prefix:
+        description: Branch name prefix; the issue number is appended
+        type: string
+        default: claude/issue-
+      test-command:
+        description: Shell command(s) that must pass before a PR is opened (multi-line allowed). Empty = let the agent infer from the repository docs
+        type: string
+        default: ''
+      extra-instructions-file:
+        description: Path (in the consumer repo) of a Markdown file appended to the base prompt
+        type: string
+        default: .github/claude-sdlc/implement.md
+      language:
+        description: Language for the comments and PR descriptions Claude writes (free text or ISO code)
+        type: string
+        default: en
+      model:
+        description: Claude model override (empty = action default)
+        type: string
+        default: ''
+      max-turns:
+        description: --max-turns for the agent
+        type: number
+        default: 200
+      allowed-tools:
+        description: --allowedTools for the agent
+        type: string
+        default: Bash,Edit,Write,Read,Glob,Grep
+      claude-args-extra:
+        description: Extra arguments appended to claude_args
+        type: string
+        default: ''
+      show-full-output:
+        description: Show the full Claude transcript in the job log (may leak secrets printed by tools)
+        type: boolean
+        default: true
+      label-in-progress:
+        type: string
+        default: in-progress
+      label-ready:
+        type: string
+        default: ready-to-implement
+      label-to-refine:
+        type: string
+        default: to-refine
+      label-blocked:
+        type: string
+        default: blocked
+      legacy-plan-heading:
+        description: Also accept plan comments containing this heading (migration aid). Empty = marker only
+        type: string
+        default: ''
+      timeout-minutes:
+        type: number
+        default: 45
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # One queue per issue: different issues run in parallel, the same issue never twice at once
+    concurrency:
+      group: claude-sdlc-implement-${{ github.repository }}-${{ inputs.issue-number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE_NUMBER: ${{ inputs.issue-number }}
+      BRANCH: ${{ inputs.branch-prefix }}${{ inputs.issue-number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Prompts and helper scripts come from the template repo at the exact
+      # commit of this reusable workflow (job.workflow_* identity), extracted
+      # outside the workspace so the agent can never commit them
+      - name: Fetch claude-sdlc template
+        run: |
+          TPL_DIR="$RUNNER_TEMP/claude-sdlc"
+          mkdir -p "$TPL_DIR"
+          gh api "repos/$TEMPLATE_REPO/tarball/$TEMPLATE_SHA" > "$RUNNER_TEMP/template.tar.gz"
+          tar -xzf "$RUNNER_TEMP/template.tar.gz" -C "$TPL_DIR" --strip-components=1
+          rm -f "$RUNNER_TEMP/template.tar.gz"
+          echo "TPL_DIR=$TPL_DIR" >> "$GITHUB_ENV"
+          echo "claude-sdlc template $TEMPLATE_REPO@$TEMPLATE_SHA extracted to $TPL_DIR"
+        env:
+          TEMPLATE_REPO: ${{ job.workflow_repository }}
+          TEMPLATE_SHA: ${{ job.workflow_sha }}
+
+      # Only a plan written by a collaborator is trusted (see docs/security.md)
+      - name: Extract the approved plan
+        id: plan
+        env:
+          LEGACY_HEADING: ${{ inputs.legacy-plan-heading }}
+          LABEL_BLOCKED: ${{ inputs.label-blocked }}
+          LABEL_READY: ${{ inputs.label-ready }}
+        run: |
+          if ! "$TPL_DIR/scripts/find-plan.sh" "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$LEGACY_HEADING" > "$RUNNER_TEMP/plan.md"; then
+            gh issue edit "$ISSUE_NUMBER" --remove-label "$LABEL_READY" --add-label "$LABEL_BLOCKED"
+            gh issue comment "$ISSUE_NUMBER" --body "⚠️ claude-sdlc: no approved plan found. The plan must be a comment containing \`<!-- claude-sdlc:plan -->\` written by a repository collaborator. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            exit 1
+          fi
+
+      - name: Mark the issue as in progress
+        env:
+          LABEL_READY: ${{ inputs.label-ready }}
+          LABEL_IN_PROGRESS: ${{ inputs.label-in-progress }}
+        run: gh issue edit "$ISSUE_NUMBER" --remove-label "$LABEL_READY" --add-label "$LABEL_IN_PROGRESS"
+
+      # persist-credentials is false on checkout; git pushes use gh as credential helper
+      - name: Configure git credentials for push
+        run: gh auth setup-git
+
+      - name: Render the prompt
+        id: prompt
+        env:
+          TPL_issue: ${{ inputs.issue-number }}
+          TPL_repository: ${{ github.repository }}
+          TPL_branch: ${{ inputs.branch-prefix }}${{ inputs.issue-number }}
+          TPL_language: ${{ inputs.language }}
+          TPL_label_in_progress: ${{ inputs.label-in-progress }}
+          TPL_label_to_refine: ${{ inputs.label-to-refine }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+          EXTRA_FILE: ${{ inputs.extra-instructions-file }}
+        run: |
+          TPL_plan="$(cat "$RUNNER_TEMP/plan.md")"; export TPL_plan
+          if [ -n "$TEST_COMMAND" ]; then
+            TPL_test_command="$(printf '```bash\n%s\n```' "$TEST_COMMAND")"
+          else
+            TPL_test_command="(No test command configured: run whatever the repository documents as its test suite and build, e.g. in CLAUDE.md or README.)"
+          fi
+          export TPL_test_command
+          {
+            echo "text<<CLAUDE_SDLC_PROMPT_EOF"
+            "$TPL_DIR/scripts/render-prompt.sh" "$TPL_DIR/prompts/implement.md" "$EXTRA_FILE"
+            echo "CLAUDE_SDLC_PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Without --allowedTools the action denies Bash by default and the agent
+      # cannot run git or the tests
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          show_full_output: ${{ inputs.show-full-output }}
+          claude_args: |
+            --max-turns ${{ inputs.max-turns }}
+            --allowedTools "${{ inputs.allowed-tools }}"
+            ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
+            ${{ inputs.claude-args-extra }}
+          prompt: ${{ steps.prompt.outputs.text }}
+
+      - name: Mark the issue as blocked if the run failed
+        if: failure()
+        env:
+          LABEL_BLOCKED: ${{ inputs.label-blocked }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --add-label "$LABEL_BLOCKED"
+          gh issue comment "$ISSUE_NUMBER" --body "⚠️ claude-sdlc: the automatic implementation run failed. See ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      # The action can finish green without having done anything (e.g. tool
+      # denials): if there is no PR and the issue is not to-refine, block it
+      - name: Check that a PR exists (or the issue was marked to-refine)
+        env:
+          LABEL_BLOCKED: ${{ inputs.label-blocked }}
+          LABEL_TO_REFINE: ${{ inputs.label-to-refine }}
+        run: |
+          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state all --json number --jq 'length')
+          refine=$(gh issue view "$ISSUE_NUMBER" --json labels --jq --arg l "$LABEL_TO_REFINE" '[.labels[].name] | contains([$l])')
+          if [ "$prs" -eq 0 ] && [ "$refine" != "true" ]; then
+            gh issue edit "$ISSUE_NUMBER" --add-label "$LABEL_BLOCKED"
+            gh issue comment "$ISSUE_NUMBER" --body "⚠️ claude-sdlc: the run ended without opening a PR or marking the issue as \`$LABEL_TO_REFINE\`. See ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            exit 1
+          fi
+
+      - name: Remove the in-progress label
+        if: always()
+        env:
+          LABEL_IN_PROGRESS: ${{ inputs.label-in-progress }}
+        run: gh issue edit "$ISSUE_NUMBER" --remove-label "$LABEL_IN_PROGRESS" || true

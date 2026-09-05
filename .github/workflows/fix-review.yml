@@ -1,0 +1,161 @@
+# claude-sdlc — fix-review
+#
+# Applies the corrections requested by the latest automatic review report to
+# the PR branch. Called when the PR is labelled "warning" or "fail". Gives up
+# after max-review-cycles and hands the PR to a human.
+name: claude-sdlc / fix-review
+
+on:
+  workflow_call:
+    inputs:
+      max-review-cycles:
+        description: Maximum number of automatic review reports before asking for a human
+        type: number
+        default: 3
+      test-command:
+        type: string
+        default: ''
+      human-reviewer:
+        description: GitHub login (without @) to mention when the cycle limit is reached
+        type: string
+        default: ''
+      extra-instructions-file:
+        type: string
+        default: .github/claude-sdlc/implement.md
+      language:
+        type: string
+        default: en
+      model:
+        type: string
+        default: ''
+      max-turns:
+        type: number
+        default: 200
+      allowed-tools:
+        type: string
+        default: Bash,Edit,Write,Read,Glob,Grep
+      allowed-bots:
+        type: string
+        default: claude
+      claude-args-extra:
+        type: string
+        default: ''
+      show-full-output:
+        type: boolean
+        default: true
+      label-needs-human-review:
+        type: string
+        default: needs-human-review
+      timeout-minutes:
+        type: number
+        default: 45
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+
+jobs:
+  fix-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: claude-sdlc-implement-${{ github.repository }}-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout the PR branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
+
+      - name: Fetch claude-sdlc template
+        run: |
+          TPL_DIR="$RUNNER_TEMP/claude-sdlc"
+          mkdir -p "$TPL_DIR"
+          gh api "repos/$TEMPLATE_REPO/tarball/$TEMPLATE_SHA" > "$RUNNER_TEMP/template.tar.gz"
+          tar -xzf "$RUNNER_TEMP/template.tar.gz" -C "$TPL_DIR" --strip-components=1
+          rm -f "$RUNNER_TEMP/template.tar.gz"
+          echo "TPL_DIR=$TPL_DIR" >> "$GITHUB_ENV"
+          echo "claude-sdlc template $TEMPLATE_REPO@$TEMPLATE_SHA extracted to $TPL_DIR"
+        env:
+          TEMPLATE_REPO: ${{ job.workflow_repository }}
+          TEMPLATE_SHA: ${{ job.workflow_sha }}
+
+      - name: Count the review cycles already done
+        id: cycles
+        run: |
+          count=$("$TPL_DIR/scripts/count-review-cycles.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER")
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Review cycles so far: $count (limit $MAX_CYCLES)"
+        env:
+          MAX_CYCLES: ${{ inputs.max-review-cycles }}
+
+      - name: Hand over to a human if the cycle limit is reached
+        if: fromJSON(steps.cycles.outputs.count) >= fromJSON(inputs.max-review-cycles)
+        env:
+          LABEL_NHR: ${{ inputs.label-needs-human-review }}
+          MAX_CYCLES: ${{ inputs.max-review-cycles }}
+          REVIEWER: ${{ inputs.human-reviewer }}
+        run: |
+          gh label create "$LABEL_NHR" --color 5319E7 --force
+          gh pr edit "$PR_NUMBER" --add-label "$LABEL_NHR"
+          mention=""
+          [ -n "$REVIEWER" ] && mention=" @$REVIEWER"
+          gh pr comment "$PR_NUMBER" --body "⚠️ claude-sdlc: $MAX_CYCLES automatic review cycles reached without a \`pass\` verdict. Manual review needed.$mention"
+
+      - name: Configure git credentials for push
+        if: fromJSON(steps.cycles.outputs.count) < fromJSON(inputs.max-review-cycles)
+        run: gh auth setup-git
+
+      # The report and the inline comments are pre-fetched from trusted authors
+      # only, so the agent never acts on instructions planted by a stranger
+      - name: Render the prompt
+        id: prompt
+        if: fromJSON(steps.cycles.outputs.count) < fromJSON(inputs.max-review-cycles)
+        env:
+          TPL_pr: ${{ github.event.pull_request.number }}
+          TPL_repository: ${{ github.repository }}
+          TPL_branch: ${{ github.event.pull_request.head.ref }}
+          TPL_language: ${{ inputs.language }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+          EXTRA_FILE: ${{ inputs.extra-instructions-file }}
+        run: |
+          TPL_review_report="$("$TPL_DIR/scripts/find-review-report.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER")"; export TPL_review_report
+          TPL_inline_comments="$("$TPL_DIR/scripts/find-inline-comments.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER")"
+          [ -n "$TPL_inline_comments" ] || TPL_inline_comments="(none)"
+          export TPL_inline_comments
+          if [ -n "$TEST_COMMAND" ]; then
+            TPL_test_command="$(printf '```bash\n%s\n```' "$TEST_COMMAND")"
+          else
+            TPL_test_command="(No test command configured: run whatever the repository documents as its test suite and build, e.g. in CLAUDE.md or README.)"
+          fi
+          export TPL_test_command
+          {
+            echo "text<<CLAUDE_SDLC_PROMPT_EOF"
+            "$TPL_DIR/scripts/render-prompt.sh" "$TPL_DIR/prompts/fix-review.md" "$EXTRA_FILE"
+            echo "CLAUDE_SDLC_PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code (apply the review)
+        if: fromJSON(steps.cycles.outputs.count) < fromJSON(inputs.max-review-cycles)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_bots: ${{ inputs.allowed-bots }}
+          show_full_output: ${{ inputs.show-full-output }}
+          claude_args: |
+            --max-turns ${{ inputs.max-turns }}
+            --allowedTools "${{ inputs.allowed-tools }}"
+            ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
+            ${{ inputs.claude-args-extra }}
+          prompt: ${{ steps.prompt.outputs.text }}

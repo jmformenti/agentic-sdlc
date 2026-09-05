@@ -1,0 +1,117 @@
+# Architecture
+
+## Components
+
+| File | Kind | Purpose |
+|---|---|---|
+| `.github/workflows/implement.yml` | reusable workflow | issue with approved plan → branch + PR |
+| `.github/workflows/review.yml` | reusable workflow | review a PR, post report, label verdict |
+| `.github/workflows/fix-review.yml` | reusable workflow | apply the latest report to the PR branch, enforce the cycle limit |
+| `.github/workflows/e2e.yml` | reusable workflow | start the app via hooks, test live with Playwright MCP |
+| `.github/workflows/mention.yml` | reusable workflow | ad-hoc `@claude` interactions |
+| `prompts/*.md` | data | base prompts, rendered by `scripts/render-prompt.sh` |
+| `scripts/*.sh`, `scripts/*.jq` | helpers | plan/report extraction with trust filter, cycle count, labelling |
+| `templates/` | data | caller workflows, prompt extensions, e2e hooks, `/plan-issue` command |
+
+The consumer repository owns the **triggers** (`on:` + `if:` in the caller) and the
+**project knowledge** (`with:` inputs, `.github/claude-sdlc/*`). Everything else — prompts,
+guards, workarounds — lives here and is picked up by every consumer when the `v1` tag moves.
+
+### How a reusable workflow gets its prompts
+
+A `workflow_call` job runs in the **caller's** context: `github.event`, `github.repository`
+and `actions/checkout` all refer to the consumer repository. To reach its own prompts and
+scripts, each job downloads this repository's tarball at `job.workflow_repository` /
+`job.workflow_sha` (the exact commit of the reusable workflow being executed) into
+`$RUNNER_TEMP/claude-sdlc` — outside the workspace, so the implementing agent can never
+commit it. Prompts are rendered by substituting `{{placeholders}}` and appending the
+consumer's extension file, then passed to the action's `prompt` input.
+
+## State machine
+
+Labels drive everything. Names are inputs; the defaults are:
+
+```
+                     ┌──────────────────────────────────────────────────┐
+                     │ issue                                            │
+  /plan-issue ─────▶ │ ready-to-implement ──▶ in-progress ──┬─▶ (PR)    │
+                     │                                      ├─▶ to-refine  (question; draft PR)
+                     │                                      └─▶ blocked    (run failed / no PR)
+                     └──────────────────────────────────────────────────┘
+                     ┌──────────────────────────────────────────────────┐
+                     │ pull request                                     │
+  opened/push ─────▶ │ review ──▶ pass ──▶ e2e ──▶ ✅ mention reviewer   │
+                     │        ├─▶ warning ─┐        └─▶ fail ─┐         │
+                     │        └─▶ fail ────┴─▶ fix-review ◀───┘         │
+                     │                          │ push ──▶ review…      │
+                     │                          └─▶ needs-human-review  (cycle limit)
+                     └──────────────────────────────────────────────────┘
+```
+
+Rules that make it work:
+
+- `pass`, `warning`, `fail` are **mutually exclusive** and always applied as *two* `gh pr edit`
+  calls (remove all, then add one). GitHub only emits a new `labeled` event — the trigger of
+  `fix-review` and `e2e` — when the label really changes; a combined
+  `--add-label X --remove-label X` does not re-fire when the verdict repeats.
+- Labels are applied with the **Claude App token** returned by the action
+  (`steps.claude.outputs.github_token`), never with `GITHUB_TOKEN`: events created with
+  `GITHUB_TOKEN` never trigger other workflows.
+- The verdict comes from Claude's **structured output** (`--json-schema`), with the marker in
+  the report comment as a fallback. No second model run is needed to label.
+- The review cycle counter is the number of trusted comments carrying
+  `<!-- claude-sdlc:review`. `fix-review` refuses to run once it reaches `max-review-cycles`
+  and labels `needs-human-review` instead.
+- The implementer job fails (and labels `blocked`) when the action ends green without having
+  opened a PR or marked the issue `to-refine` — the action can finish "successfully" after
+  tool denials without doing anything.
+
+## Markers
+
+Machine-readable HTML comments, invisible on GitHub, independent of the `language` used for
+the human text:
+
+| Marker | Written by | Read by |
+|---|---|---|
+| `<!-- claude-sdlc:plan -->` | you (`/plan-issue`) | implement, review, e2e (`scripts/find-plan.sh`) |
+| `<!-- claude-sdlc:review cycle=N verdict=V -->` | reviewer | review (fallback verdict), fix-review, cycle counter |
+| `<!-- claude-sdlc:e2e verdict=V -->` | e2e tester | e2e (fallback verdict) |
+
+Only comments by `OWNER` / `MEMBER` / `COLLABORATOR` authors or by the `claude[bot]` /
+`github-actions[bot]` bots are considered (see [security.md](security.md)).
+
+## Concurrency
+
+| Workflow | Group | Cancel in progress |
+|---|---|---|
+| implement | `claude-sdlc-implement-<repo>-<issue>` | no (a running implementation is never killed) |
+| fix-review | `claude-sdlc-implement-<repo>-pr-<pr>` | no |
+| review | `claude-sdlc-review-<repo>-<pr>` | yes (a review of a superseded diff must not label after a newer one) |
+| e2e | `claude-sdlc-e2e-<repo>-<pr>` | yes |
+
+Different issues / PRs run in parallel.
+
+## Cost
+
+Per issue, in Claude runs (each bounded by `max-turns`):
+
+- 1 × implement (`max-turns` 200 by default; a medium full-stack issue used ~200 turns in
+  practice, a small one far fewer).
+- 1 × review per push to the PR (default `max-turns` 100).
+- up to `max-review-cycles − 1` × fix-review (default limit 3 → at most 2 fix runs).
+- 1 × e2e per `pass` (optional).
+
+Levers: `max-review-cycles`, `max-turns`, `model` (e.g. a cheaper model for review), keeping
+issues small (the plan gate is the real cost control), and not enabling e2e until the rest is
+stable. There is no hard budget per run in the action; `max-turns` is the only cap.
+
+## Testing
+
+The workflows cannot run locally (`act` cannot run the Claude action). What is verifiable:
+
+- `actionlint` on the reusable workflows and on the caller templates, `shellcheck` on the
+  scripts — done by `self-check.yml`.
+- The jq trust filter and the extraction scripts can be exercised locally against a real
+  repository with `gh` authenticated (they are read-only).
+- Real behaviour: adopt on a repository with a small issue and watch one full cycle (see
+  [migration.md](migration.md)).

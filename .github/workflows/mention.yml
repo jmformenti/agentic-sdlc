@@ -1,0 +1,53 @@
+# claude-sdlc — mention
+#
+# Ad-hoc interaction: answers "@claude" mentions in issues, PR comments and
+# reviews. Thin wrapper over anthropics/claude-code-action; the caller decides
+# the trigger condition.
+name: claude-sdlc / mention
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        type: string
+        default: ''
+      claude-args-extra:
+        description: Extra claude_args (e.g. --allowedTools "Bash(gh pr *)")
+        type: string
+        default: ''
+      timeout-minutes:
+        type: number
+        default: 30
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+
+jobs:
+  mention:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+      actions: read # lets Claude read CI results on PRs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          additional_permissions: |
+            actions: read
+          claude_args: |
+            ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
+            ${{ inputs.claude-args-extra }}

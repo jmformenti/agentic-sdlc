@@ -1,0 +1,33 @@
+# Lints this repository: the reusable workflows, the caller templates and the
+# shell scripts. Workflows cannot be executed here (they need a consumer repo
+# and a Claude token), see docs/architecture.md → "Testing".
+name: Self-check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint
+        run: bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+
+      # job.workflow_repository / job.workflow_sha are documented GitHub context
+      # properties that actionlint does not know yet
+      - name: actionlint (reusable workflows)
+        run: ./actionlint -color -ignore 'property "workflow_(repository|sha)" is not defined in object type'
+
+      - name: actionlint (caller templates)
+        run: ./actionlint -color templates/.github/workflows/*.yml
+
+      - name: shellcheck
+        run: shellcheck scripts/*.sh templates/.github/claude-sdlc/*.sh

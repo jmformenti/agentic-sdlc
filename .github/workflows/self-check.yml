@@ -22,9 +22,10 @@ jobs:
         run: bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
 
       # job.workflow_repository / job.workflow_sha are documented GitHub context
-      # properties that actionlint does not know yet
+      # properties that actionlint does not know yet; SC2016 fires on jq
+      # variables ($x) inside single quotes, which is intended
       - name: actionlint (reusable workflows)
-        run: ./actionlint -color -ignore 'property "workflow_(repository|sha)" is not defined in object type'
+        run: ./actionlint -color -ignore 'property "workflow_(repository|sha)" is not defined in object type' -ignore 'SC2016'
 
       - name: actionlint (caller templates)
         run: ./actionlint -color templates/.github/workflows/*.yml

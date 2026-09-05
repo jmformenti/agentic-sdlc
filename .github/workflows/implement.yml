@@ -193,7 +193,7 @@ jobs:
           LABEL_TO_REFINE: ${{ inputs.label-to-refine }}
         run: |
           prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state all --json number --jq 'length')
-          refine=$(gh issue view "$ISSUE_NUMBER" --json labels --jq --arg l "$LABEL_TO_REFINE" '[.labels[].name] | contains([$l])')
+          refine=$(gh issue view "$ISSUE_NUMBER" --json labels | jq -r --arg l "$LABEL_TO_REFINE" '[.labels[].name] | contains([$l])')
           if [ "$prs" -eq 0 ] && [ "$refine" != "true" ]; then
             gh issue edit "$ISSUE_NUMBER" --add-label "$LABEL_BLOCKED"
             gh issue comment "$ISSUE_NUMBER" --body "⚠️ claude-sdlc: the run ended without opening a PR or marking the issue as \`$LABEL_TO_REFINE\`. See ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
